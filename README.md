@@ -6,6 +6,33 @@ No install, no build step, no dependencies. It's a single HTML file — open it 
 
 ![Initial view](screenshots/1-initial.png)
 
+## How the pieces fit together
+
+Every controller in this app is just a different way of turning the current state into a force. The physics doesn't care which one is plugged in:
+
+```mermaid
+flowchart LR
+    S["State: x, ẋ, θ, θ̇"] --> C{Controller}
+    C -->|PID| F1["F = Kp·θ + Ki·∫θ + Kd·θ̇<br/>+ Kx·x + Kdx·ẋ"]
+    C -->|LQR| F2["F = −K·(state − equilibrium)<br/>K from Riccati solve"]
+    C -->|Swing-Up| F3["F = −k·θ̇·cosθ·(E_target − E) − Kc·x"]
+    F1 --> P
+    F2 --> P
+    F3 --> P
+    P["Nonlinear physics<br/>(RK4 integration, fixed timestep)"] -->|new state, 60×/sec| S
+```
+
+Swing-up is really two controllers chained together with an automatic handoff:
+
+```mermaid
+stateDiagram-v2
+    [*] --> HangingDown : Reset (theta = 180 degrees)
+    HangingDown --> PumpingEnergy : Start
+    PumpingEnergy --> PumpingEnergy : apply energy-shaping force every step
+    PumpingEnergy --> Balancing : angle and angular velocity both small
+    Balancing --> [*] : LQR holds it upright indefinitely
+```
+
 ## Quick start
 
 1. Download or clone this repo.
@@ -73,11 +100,47 @@ The **Physical Parameters** sliders change the actual simulated system — cart 
 
 The strip chart below the simulation plots angle (blue) and cart position (orange) over a rolling 12-second window — useful for eyeballing overshoot, settling time, and oscillation as you retune gains. (During swing-up, angle briefly exceeds the chart's ±60° scale and draws off the top — that's expected; the chart is most informative once you're in the balancing phase.)
 
-## How the physics works
+## How it works, in detail
 
-The simulation integrates the standard nonlinear, frictionless rigid-rod-on-cart model with RK4 at a fixed timestep (decoupled from the animation frame rate, so it behaves consistently regardless of your monitor's refresh rate). State is `[x, ẋ, θ, θ̇]`; the only input is a horizontal force `F` on the cart.
+### The physics
 
-Everything — physics, linear algebra (a hand-rolled small-matrix library), the Riccati solver, rendering, and UI — lives in `index.html`, with no external libraries. Open it in a text editor if you want to see exactly how any of it works; it's organized top-to-bottom as `Physics → Linear algebra → LQR → Simulation state → Rendering → Main loop → UI wiring`.
+The simulation integrates the standard nonlinear, frictionless rigid-rod-on-cart model — a cart of mass `M` free to slide horizontally, with a uniform rod of mass `m` and half-length `l` pivoting on top of it. State is `[x, ẋ, θ, θ̇]` (cart position/velocity, pole angle/angular velocity from upright); the only input is a horizontal force `F` on the cart. The equations of motion:
+
+```
+temp      = (F + m·l·θ̇²·sinθ) / (M + m)
+θ̈ (theta) = (g·sinθ − cosθ·temp) / (l·(4/3 − m·cos²θ/(M+m)))
+ẍ (xddot) = temp − m·l·θ̈·cosθ / (M + m)
+```
+
+The `4/3` factor is the moment of inertia of a uniform rod about its pivot end (`(1/3)m l²` about its own center, plus `m l²` from the parallel-axis theorem for pivoting at the end, giving `(4/3)m l²`) — it's not an arbitrary constant, it falls straight out of treating the pole as a real rigid rod rather than a point mass on a string.
+
+These are integrated with **RK4** (4th-order Runge-Kutta) at a fixed 0.01s timestep, sub-stepped independently of the animation frame rate via an accumulator pattern — so the simulation behaves identically regardless of your monitor's refresh rate, and stays numerically stable even under fast, aggressive control forces.
+
+### PID
+
+Standard three-term control on the angle, `F = Kp·θ + Ki·∫θ dt + Kd·θ̇`, plus a slower position-recovery term `+ Kx·x + Kdx·ẋ` so the cart doesn't drift off the track forever. Note there's no minus sign in front of any term — that's specific to this system's sign convention (positive force pushes the cart in +x, which happens to require a *positive* angle-proportional force to correct a *positive* tilt here), and it's exactly the kind of detail that's easy to get backwards from intuition alone. The integral term is clamped (anti-windup) to stop it accumulating without bound while the pole is still far from upright.
+
+### LQR
+
+1. **Linearize numerically.** Rather than hand-deriving a linear approximation of the equations above (easy to get subtly wrong), the app takes central finite differences of the *exact* nonlinear dynamics around the upright equilibrium, giving a 4×4 matrix `A` and a 4×1 matrix `B` such that `d(state)/dt ≈ A·state + B·F` near upright.
+2. **Discretize.** `Ad = I + A·dt`, `Bd = B·dt` (Euler discretization at the simulation's own timestep — accurate enough since `dt` is small).
+3. **Solve the discrete-time algebraic Riccati equation** by iterating its backward recursion to convergence, starting from `P = Q`:
+   ```
+   K  = (R + Bdᵀ·P·Bd)⁻¹ · (Bdᵀ·P·Ad)
+   P' = Adᵀ·P·Ad − Adᵀ·P·Bd·K + Q
+   ```
+   Repeated ~300 times, this converges to the steady-state solution for any stabilizable system. Because there's only one control input, `R + Bdᵀ·P·Bd` is a scalar, so the "inverse" is just a division — no matrix inversion routine needed.
+4. **Apply it.** `F = −K·(state − equilibrium)` — one formula, all four state variables, automatically balancing state error against control effort according to the `Q`/`R` weights you set.
+
+### Swing-up
+
+The pole's mechanical energy about the pivot, referenced so it's exactly zero at the upright target: `E = ½·I·θ̇² + m·g·l·(cosθ − 1)`, where `I = (4/3)m l²`. The control law `F = −k·θ̇·cosθ·(E_target − E) − Kc·x` pumps energy in on every swing until `E` approaches its target, with a small cart-centering term (`−Kc·x`) so the process doesn't walk the cart off the rail. Once the angle and angular velocity are both small, control switches to LQR.
+
+This law's sign was **not** obvious from the usual textbook description — an early version pumped energy in the wrong direction and just damped the pendulum to a standstill at the bottom. It was found by numerically computing the exact `dE/dt` under `F = +10N` and `F = −10N` at several sample states and checking which sign of force actually increased energy, rather than trusting a remembered formula. The lesson generalizes: for anything nonlinear and coupled like this, a quick numerical check beats confidence in a derivation.
+
+### Code layout
+
+Everything — physics, a hand-rolled small-matrix library, the Riccati solver, energy/swing-up logic, response-time measurement, rendering, and UI — lives in `index.html` with no external dependencies. Top-to-bottom: `Physics → Linear algebra → LQR → Swing-up → Response test → Manual keyboard control → Simulation state → Rendering → Main loop → UI wiring`.
 
 ## Related projects
 
