@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Cart-Pole Control Lab — PID vs LQR</title>
+<title>Cart-Pole Control Lab — PID, LQR, MPC, Swing-Up</title>
 <style>
   :root {
     color-scheme: dark;
@@ -125,7 +125,7 @@
 <body>
 
 <h1>Cart-Pole Control Lab</h1>
-<p class="subtitle">Classical control on the classic benchmark: hand-tuned PID vs. optimal LQR, balancing the same nonlinear cart-pole.</p>
+<p class="subtitle">Four control philosophies, one nonlinear cart-pole: hand-tuned PID, optimal LQR, constraint-aware MPC, and energy-based swing-up.</p>
 
 <div class="layout">
   <div>
@@ -164,10 +164,23 @@
         <button id="tabOff" data-mode="off">Manual</button>
         <button id="tabPid" data-mode="pid" class="active">PID</button>
         <button id="tabLqr" data-mode="lqr">LQR</button>
+        <button id="tabMpc" data-mode="mpc">MPC</button>
         <button id="tabSwing" data-mode="swingup">Swing-Up</button>
       </div>
 
       <p id="manualHint" style="display:none; font-size:11.5px; color:var(--text-dim); margin:-4px 0 12px;">No controller active — use <code>&larr;</code> / <code>&rarr;</code> arrow keys (click the page first) to try balancing it by hand.</p>
+
+      <div id="mpcControls" style="display:none;">
+        <div class="slider-row">
+          <label>Planning horizon N (steps) <span class="val" id="mpcNVal">15</span></label>
+          <input type="range" id="mpcN" min="5" max="30" step="1" value="15" />
+        </div>
+        <div class="slider-row">
+          <label>Force limit (N) <span class="val" id="mpcFmaxVal">20</span></label>
+          <input type="range" id="mpcFmax" min="2" max="40" step="1" value="20" />
+        </div>
+        <p style="font-size:11px; color:var(--text-dim); margin-top:-4px;">Uses the same Q/R cost weights as LQR (below), but instead of one fixed gain forever, it re-solves a short-horizon optimal plan every step — and unlike LQR, it knows about the force limit while planning, not just after.</p>
+      </div>
 
       <div id="swingControls" style="display:none;">
         <div class="slider-row">
@@ -257,6 +270,10 @@
       <div id="swingReadoutWrap" style="display:none; margin-top:8px;">
         <div class="readout"><span class="k">Phase</span><span class="v" id="rPhase">—</span></div>
       </div>
+      <div id="mpcReadoutWrap" style="display:none; margin-top:8px;">
+        <label>Planned force sequence (N) — only the first value is applied, then it's re-solved next step</label>
+        <div class="readout" style="font-size:11px;" id="rMpcPlan">—</div>
+      </div>
       <div id="kReadoutWrap" style="display:none; margin-top:10px;">
         <label>LQR gain K (recomputed live via numeric linearization + discrete Riccati recursion)</label>
         <div class="readout" style="font-size:11px;" id="rK">—</div>
@@ -269,9 +286,10 @@
         <p><b>Physics:</b> the cart-pole is the standard nonlinear rigid-rod-on-cart model (frictionless pivot). State is <code>[x, ẋ, θ, θ̇]</code>; the only input is a horizontal force <code>F</code> on the cart. It's integrated with RK4 at a fixed timestep, sub-stepped independently of the animation frame rate.</p>
         <p><b>PID:</b> drives the pole angle to 0 with <code>F = Kp·θ + Ki·∫θ + Kd·θ̇</code>, plus a slow position-recovery term <code>+ Kx·x + Kdx·ẋ</code> to stop the cart drifting off the track. Angle-only PID balances beautifully but leaves cart position uncontrolled — that coupling is exactly what makes this system harder than two independent single-loop problems, and exactly what LQR handles properly.</p>
         <p><b>LQR:</b> the nonlinear dynamics are linearized around the upright equilibrium <i>numerically</i> (central finite differences on the true nonlinear model — no hand-derived linear equations), giving matrices A, B. These are discretized at the simulation timestep and fed into the discrete-time algebraic Riccati equation, solved by iterating the backward Riccati recursion to convergence. The result is a single optimal gain vector K such that <code>F = -K·(state − equilibrium)</code> minimizes a cost trading off state error (weighted by Q) against control effort (weighted by R) — one unified law for all four state variables at once, recomputed live whenever Q, R, or the physical parameters change.</p>
-        <p><b>Swing-Up:</b> a third, completely different design philosophy — nonlinear energy-shaping control. Instead of a linear correction near one equilibrium, it works far from equilibrium: starting from hanging straight down, it computes the pole's mechanical energy <code>E = ½Iθ̇² + mgl(cosθ−1)</code> (zero exactly at the upright target) and applies <code>F = −k·θ̇·cosθ·(E_target − E) − Kc·x</code> — a term that pumps energy into the swing every cycle until it's near the top, plus a small cart-centering term so the cart doesn't run off the rail while swinging. Once the angle and angular velocity are both small enough, it automatically hands off to LQR to catch and hold it. (Getting the energy-pumping sign and the centering term right took genuine trial and error against a numerical simulation, not just the textbook formula — a good reminder that even "solved" control problems need verification, not just derivation.)</p>
+        <p><b>MPC:</b> instead of one fixed gain forever (LQR), Model Predictive Control re-solves a short optimization problem every single step: "given where I am right now, what's the best sequence of forces over the next N steps?" — using the same linearized model, and the same Q/R cost, as LQR (in fact, using LQR's own cost-to-go matrix P as the value of ending up in some state at the end of that short horizon makes the two mathematically agree exactly when nothing is constrained). It only ever applies the *first* force from that plan, then throws the rest away and re-plans next step (this is what "receding horizon" means). The one thing MPC can do that LQR fundamentally can't: it knows about the force limit <i>while</i> planning, not just after — so instead of computing an ideal force and clipping it if it's too big (which can destabilize a system that's being pushed to its limits), MPC searches only over sequences that respect the limit from the start.</p>
+        <p><b>Swing-Up:</b> a fourth, completely different design philosophy — nonlinear energy-shaping control. Instead of a linear correction near one equilibrium, it works far from equilibrium: starting from hanging straight down, it computes the pole's mechanical energy <code>E = ½Iθ̇² + mgl(cosθ−1)</code> (zero exactly at the upright target) and applies <code>F = −k·θ̇·cosθ·(E_target − E) − Kc·x</code> — a term that pumps energy into the swing every cycle until it's near the top, plus a small cart-centering term so the cart doesn't run off the rail while swinging. Once the angle and angular velocity are both small enough, it automatically hands off to LQR to catch and hold it. (Getting the energy-pumping sign and the centering term right took genuine trial and error against a numerical simulation, not just the textbook formula — a good reminder that even "solved" control problems need verification, not just derivation.)</p>
         <p><b>Manual:</b> the "Off" tab is also a playable mode — click the page and use the arrow keys to push the cart yourself. It's a good way to feel how fast and precise a real controller has to be; most people can't hold it up for more than a couple of seconds.</p>
-        <p><b>Try this:</b> push the pole hard with PID position-centering gain at 0 — the pole recovers but the cart wanders. Then switch to LQR and push equally hard — position and angle recover together. Or run <b>Test Step Response</b> under PID vs. LQR with equivalent gains and compare settling time and overshoot directly.</p>
+        <p><b>Try this:</b> push the pole hard with PID position-centering gain at 0 — the pole recovers but the cart wanders. Then switch to LQR and push equally hard — position and angle recover together. Or run <b>Test Step Response</b> under PID vs. LQR with equivalent gains and compare settling time and overshoot directly. For MPC specifically: lower the <b>Force limit</b> to something quite tight (e.g. 3–5N), push the pole, and watch the "Planned force sequence" readout — MPC is visibly budgeting its limited force across the next N steps rather than just slamming into a ceiling.</p>
       </details>
     </div>
   </div>
@@ -364,20 +382,74 @@
     const BtPB = matMul(BtP, Bd)[0][0];
     const denom = R + BtPB;
     const BtPA = matMul(BtP, Ad);
-    return BtPA[0].map((v) => v / denom);
+    const K = BtPA[0].map((v) => v / denom);
+    return { K, P };
   }
 
-  function computeLQRGain(p, Qdiag, R, dt) {
+  function discretize(p, dt) {
     const { A, B } = linearize(p);
     const Ad = A.map((row, i) => row.map((v, j) => (i === j ? 1 : 0) + v * dt));
     const Bd = B.map((row) => row.map((v) => v * dt));
+    return { Ad, Bd };
+  }
+
+  function computeLQR(p, Qdiag, R, dt) {
+    const { Ad, Bd } = discretize(p, dt);
     const Q = [
       [Qdiag[0], 0, 0, 0],
       [0, Qdiag[1], 0, 0],
       [0, 0, Qdiag[2], 0],
       [0, 0, 0, Qdiag[3]],
     ];
-    return solveDARE(Ad, Bd, Q, R, 300);
+    const { K, P } = solveDARE(Ad, Bd, Q, R, 300);
+    return { K, P, Ad, Bd, Q, R };
+  }
+
+  // ---------- MPC: finite-horizon shooting method, LQR's P as terminal cost ----------
+  // Plans a short sequence of forces (respecting a hard force limit) via projected
+  // gradient descent on the linearized model, then applies only the first one
+  // (receding horizon) -- the same idea as LQR, but constraint-aware and re-solved
+  // every step instead of one fixed gain forever.
+  function solveMPC(lqr, x0, N, Fmax, prevU) {
+    const { Ad, Bd, Q } = lqr;
+    function stepLin(x, u) {
+      return x.map((_, i) => Ad[i][0] * x[0] + Ad[i][1] * x[1] + Ad[i][2] * x[2] + Ad[i][3] * x[3] + Bd[i][0] * u);
+    }
+    function stageCost(x, u) {
+      let c = 0;
+      for (let i = 0; i < 4; i++) c += Q[i][i] * x[i] * x[i];
+      return c + lqr.R * u * u;
+    }
+    function terminalCost(x) {
+      let c = 0;
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) c += x[i] * lqr.P[i][j] * x[j];
+      return c;
+    }
+    function rollout(U) {
+      let x = x0.slice();
+      let cost = 0;
+      for (let k = 0; k < U.length; k++) {
+        cost += stageCost(x, U[k]);
+        x = stepLin(x, U[k]);
+      }
+      return cost + terminalCost(x);
+    }
+    let U = prevU && prevU.length === N ? prevU.slice(1).concat([prevU[prevU.length - 1]]) : new Array(N).fill(0);
+    U = U.map((u) => Math.max(-Fmax, Math.min(Fmax, u)));
+    const eps = 1e-2;
+    const lr = 0.02;
+    for (let iter = 0; iter < 60; iter++) {
+      const grad = U.map((_, k) => {
+        const Up = U.slice(); Up[k] += eps;
+        const Um = U.slice(); Um[k] -= eps;
+        return (rollout(Up) - rollout(Um)) / (2 * eps);
+      });
+      for (let k = 0; k < N; k++) {
+        U[k] -= lr * grad[k];
+        U[k] = Math.max(-Fmax, Math.min(Fmax, U[k]));
+      }
+    }
+    return U;
   }
 
   // ---------- Simulation state ----------
@@ -393,7 +465,8 @@
   let simTime = 0;
   let mode = 'pid';
   let lastForce = 0;
-  let cachedK = null;
+  let cachedLQR = null; // { K, P, Ad, Bd, Q, R }
+  let mpcPrevU = null; // warm-start for the MPC solver
   let history = []; // {t, theta, x}
   let swungUp = false; // swing-up phase complete, handed off to LQR catch
 
@@ -491,10 +564,15 @@
     };
   }
 
+  function mpcSettings() {
+    return { N: +document.getElementById('mpcN').value, Fmax: +document.getElementById('mpcFmax').value };
+  }
+
   function recomputeK() {
     const { Qdiag, R } = lqrWeights();
-    cachedK = computeLQRGain(params, Qdiag, R, DT);
-    document.getElementById('rK').textContent = cachedK.map((v) => v.toFixed(2)).join(',  ');
+    cachedLQR = computeLQR(params, Qdiag, R, DT);
+    document.getElementById('rK').textContent = cachedLQR.K.map((v) => v.toFixed(2)).join(',  ');
+    mpcPrevU = null; // Q/R or params changed, discard warm-start
   }
 
   function controlForce() {
@@ -506,9 +584,18 @@
       return g.kp * state.theta + g.ki * integralTheta + g.kd * state.thetadot + g.kx * state.x + g.kdx * state.xdot;
     }
     if (mode === 'lqr') {
-      if (!cachedK) recomputeK();
-      const K = cachedK;
+      if (!cachedLQR) recomputeK();
+      const K = cachedLQR.K;
       return -(K[0] * state.x + K[1] * state.xdot + K[2] * state.theta + K[3] * state.thetadot);
+    }
+    if (mode === 'mpc') {
+      if (!cachedLQR) recomputeK();
+      const { N, Fmax } = mpcSettings();
+      const x0 = [state.x, state.xdot, state.theta, state.thetadot];
+      const U = solveMPC(cachedLQR, x0, N, Fmax, mpcPrevU);
+      mpcPrevU = U;
+      document.getElementById('rMpcPlan').textContent = U.map((u) => u.toFixed(1)).join(', ');
+      return U[0];
     }
     if (mode === 'swingup') {
       if (!swungUp) {
@@ -522,8 +609,8 @@
           return swingUpForce();
         }
       }
-      if (!cachedK) recomputeK();
-      const K = cachedK;
+      if (!cachedLQR) recomputeK();
+      const K = cachedLQR.K;
       return -(K[0] * state.x + K[1] * state.xdot + K[2] * state.theta + K[3] * state.thetadot);
     }
     return 0;
@@ -686,7 +773,7 @@
     document.getElementById('rTheta').textContent = ((state.theta * 180) / Math.PI).toFixed(1) + '°';
     document.getElementById('rX').textContent = state.x.toFixed(2) + ' m';
     document.getElementById('rF').textContent = lastForce.toFixed(1) + ' N';
-    const modeLabels = { off: 'MANUAL', pid: 'PID', lqr: 'LQR', swingup: 'SWING-UP' };
+    const modeLabels = { off: 'MANUAL', pid: 'PID', lqr: 'LQR', mpc: 'MPC', swingup: 'SWING-UP' };
     document.getElementById('rMode').textContent = modeLabels[mode] || mode.toUpperCase();
     if (mode === 'swingup') {
       document.getElementById('rPhase').textContent = swungUp ? 'Balancing' : 'Swinging up…';
@@ -733,7 +820,6 @@
         params.M = +document.getElementById('massC').value;
         params.m = +document.getElementById('massP').value;
         params.l = +document.getElementById('len').value;
-        cachedK = null;
         recomputeK();
       }
     });
@@ -751,6 +837,8 @@
   bindSlider('massC', 'massCVal', (v) => v.toFixed(1));
   bindSlider('massP', 'massPVal', (v) => v.toFixed(2));
   bindSlider('len', 'lenVal', (v) => v.toFixed(2));
+  bindSlider('mpcN', 'mpcNVal', (v) => String(v));
+  bindSlider('mpcFmax', 'mpcFmaxVal', (v) => String(v));
 
   function setMode(m) {
     const needsReset = m === 'swingup' || mode === 'swingup';
@@ -758,19 +846,23 @@
     document.getElementById('tabOff').classList.toggle('active', m === 'off');
     document.getElementById('tabPid').classList.toggle('active', m === 'pid');
     document.getElementById('tabLqr').classList.toggle('active', m === 'lqr');
+    document.getElementById('tabMpc').classList.toggle('active', m === 'mpc');
     document.getElementById('tabSwing').classList.toggle('active', m === 'swingup');
     document.getElementById('pidControls').style.display = m === 'pid' ? 'block' : 'none';
-    document.getElementById('lqrControls').style.display = m === 'lqr' ? 'block' : 'none';
+    document.getElementById('lqrControls').style.display = m === 'lqr' || m === 'mpc' ? 'block' : 'none';
+    document.getElementById('mpcControls').style.display = m === 'mpc' ? 'block' : 'none';
     document.getElementById('swingControls').style.display = m === 'swingup' ? 'block' : 'none';
     document.getElementById('manualHint').style.display = m === 'off' ? 'block' : 'none';
-    document.getElementById('kReadoutWrap').style.display = m === 'lqr' || m === 'swingup' ? 'block' : 'none';
+    document.getElementById('kReadoutWrap').style.display = m === 'lqr' || m === 'swingup' || m === 'mpc' ? 'block' : 'none';
     document.getElementById('swingReadoutWrap').style.display = m === 'swingup' ? 'block' : 'none';
-    if (m === 'lqr' || m === 'swingup') recomputeK();
+    document.getElementById('mpcReadoutWrap').style.display = m === 'mpc' ? 'block' : 'none';
+    if (m === 'lqr' || m === 'swingup' || m === 'mpc') recomputeK();
     if (needsReset) reset();
   }
   document.getElementById('tabOff').addEventListener('click', () => setMode('off'));
   document.getElementById('tabPid').addEventListener('click', () => setMode('pid'));
   document.getElementById('tabLqr').addEventListener('click', () => setMode('lqr'));
+  document.getElementById('tabMpc').addEventListener('click', () => setMode('mpc'));
   document.getElementById('tabSwing').addEventListener('click', () => setMode('swingup'));
 
   function reset() {
@@ -783,11 +875,11 @@
     failed = false;
     swungUp = false;
     manualForce = 0;
+    mpcPrevU = null;
     history = [];
     testActive = false;
     document.getElementById('testResult').textContent = '';
-    cachedK = null;
-    if (mode === 'lqr' || mode === 'swingup') recomputeK();
+    if (mode === 'lqr' || mode === 'swingup' || mode === 'mpc') recomputeK();
   }
 
   document.getElementById('btnStart').addEventListener('click', (e) => {

@@ -1,6 +1,6 @@
 # Cart-Pole Control Lab
 
-A hands-on control systems playground: balance the classic inverted-pendulum-on-a-cart with a hand-tuned **PID** controller, then switch to an optimal **LQR** controller computed live in your browser — same nonlinear physics, two very different design philosophies.
+A hands-on control systems playground: balance the classic inverted-pendulum-on-a-cart with four genuinely different controllers — hand-tuned **PID**, optimal **LQR**, constraint-aware **MPC**, and energy-based **Swing-Up** — all computed live in your browser on the same nonlinear physics.
 
 No install, no build step, no dependencies. It's a single HTML file — open it and it runs.
 
@@ -15,10 +15,12 @@ flowchart LR
     S["State: x, ẋ, θ, θ̇"] --> C{Controller}
     C -->|PID| F1["F = Kp·θ + Ki·∫θ + Kd·θ̇<br/>+ Kx·x + Kdx·ẋ"]
     C -->|LQR| F2["F = −K·(state − equilibrium)<br/>K from Riccati solve"]
+    C -->|MPC| F4["Re-solve a short-horizon plan<br/>every step, respecting a force limit"]
     C -->|Swing-Up| F3["F = −k·θ̇·cosθ·(E_target − E) − Kc·x"]
     F1 --> P
     F2 --> P
     F3 --> P
+    F4 --> P
     P["Nonlinear physics<br/>(RK4 integration, fixed timestep)"] -->|new state, 60×/sec| S
 ```
 
@@ -70,9 +72,21 @@ Push the pole exactly as hard as before. This time both the angle **and** the ca
 
 ![LQR recovering from a push, position and angle together](screenshots/3-lqr-recovering.png)
 
-### 3. Swing it up from hanging down
+### 3. See what a force limit does — LQR vs. MPC
 
-Click the **Swing-Up** tab. This is a third, completely different control philosophy: instead of a linear correction near the upright equilibrium, it's **nonlinear energy-shaping control**, and it starts from the pole hanging straight down.
+Click the **MPC** tab. Model Predictive Control uses the *same* linearized model and the *same* Q/R cost as LQR — but instead of computing one fixed gain forever, it re-solves a short optimization problem every single step ("given where I am right now, what's the best sequence of forces for the next N steps?"), applies only the first force, then throws the plan away and re-solves next step.
+
+That alone wouldn't be very different from LQR — the two agree almost exactly when nothing is constrained. The real difference is the **Force limit** slider: MPC plans *knowing* that limit exists, while LQR would have to compute its ideal force and then get clipped after the fact. Try this:
+
+1. Push the pole hard under **LQR** with the Q/R weights at their defaults — it recovers cleanly.
+2. Switch to **MPC**, set **Force limit** to something tight like 3–5 N, and push equally hard.
+3. Watch the **"Planned force sequence"** readout — you can see it budgeting a limited resource across the next several steps, not just slamming into a ceiling.
+
+![MPC holding steady under a tight 4N force limit](screenshots/7-mpc-tight-limit.png)
+
+### 4. Swing it up from hanging down
+
+Click the **Swing-Up** tab. This is a fourth, completely different control philosophy: instead of a linear correction near the upright equilibrium, it's **nonlinear energy-shaping control**, and it starts from the pole hanging straight down.
 
 ![Hanging straight down, about to start swinging up](screenshots/4-swingup-hanging.png)
 
@@ -84,19 +98,19 @@ Click **Start**. The controller pumps energy into the pendulum's swing on every 
 
 The **Swing gain** and **Cart centering gain** sliders control how aggressively it pumps energy and how hard it fights to keep the cart from wandering off the rail while doing so — turn the centering gain to 0 and watch the cart run away before ever reaching the top.
 
-### 4. Try balancing it yourself
+### 5. Try balancing it yourself
 
 Click the **Manual** tab (previously "Off") and click **Start** — no controller is active. Click the page once so it has keyboard focus, then use **← / →** to push the cart yourself. Almost everyone loses it within a couple of seconds; it's a good visceral sense of why automatic control is worth having.
 
-### 5. Measure the response quantitatively
+### 6. Measure the response quantitatively
 
 With **PID** or **LQR** active and running, click **Test Step Response**. It applies a fixed angular disturbance and reports the **settling time** (how long until the angle stays within 2° continuously) and **peak overshoot** — the standard metrics control engineers use to compare tuning choices. Try it on PID and LQR back to back with their default gains: LQR isn't automatically "better" on every axis — it's optimal with respect to the cost you hand it (the Q/R weights), and the defaults here trade a slower, gentler response for lower control effort.
 
-### 6. Experiment with the physics itself
+### 7. Experiment with the physics itself
 
-The **Physical Parameters** sliders change the actual simulated system — cart mass, pole mass, pole length. Try making the pole much longer or the pole much heavier relative to the cart, then compare how much harder PID has to work versus how LQR (and swing-up) just re-solve themselves automatically.
+The **Physical Parameters** sliders change the actual simulated system — cart mass, pole mass, pole length. Try making the pole much longer or the pole much heavier relative to the cart, then compare how much harder PID has to work versus how LQR, MPC, and swing-up just re-solve themselves automatically.
 
-### 7. Read the chart
+### 8. Read the chart
 
 The strip chart below the simulation plots angle (blue) and cart position (orange) over a rolling 12-second window — useful for eyeballing overshoot, settling time, and oscillation as you retune gains. (During swing-up, angle briefly exceeds the chart's ±60° scale and draws off the top — that's expected; the chart is most informative once you're in the balancing phase.)
 
@@ -132,6 +146,19 @@ Standard three-term control on the angle, `F = Kp·θ + Ki·∫θ dt + Kd·θ̇`
    Repeated ~300 times, this converges to the steady-state solution for any stabilizable system. Because there's only one control input, `R + Bdᵀ·P·Bd` is a scalar, so the "inverse" is just a division — no matrix inversion routine needed.
 4. **Apply it.** `F = −K·(state − equilibrium)` — one formula, all four state variables, automatically balancing state error against control effort according to the `Q`/`R` weights you set.
 
+### MPC
+
+Uses the exact same linearized/discretized model (`Ad`, `Bd`) and cost weights (`Q`, `R`) as LQR, but instead of solving once for a steady-state gain, it solves a **finite-horizon** version fresh every step:
+
+1. **Terminal cost = LQR's own `P` matrix.** This is the mathematically important trick: `P` is LQR's cost-to-go — the true cost of ending a trajectory in some state and running the optimal controller forever after. Using it as the cost of the *last* state in a short N-step plan means a short-horizon MPC problem and the infinite-horizon LQR problem agree almost exactly whenever nothing is constrained (an early version of this used a crude placeholder terminal cost instead, and the resulting controller was needlessly weak/myopic — using the real `P` fixed it immediately).
+2. **Roll the plan forward** through the linear model for N steps, accumulating `x'Qx + Ru²` at each step, `x'Px` at the end.
+3. **Optimize the force sequence** — projected gradient descent (finite-difference gradients, clamped to `[-Fmax, Fmax]` after every step) starting from last step's plan shifted by one (warm-starting), since re-solving from scratch every step would be wasteful and warm-starting converges in far fewer iterations.
+4. **Apply only the first force**, discard the rest of the plan, and repeat next step — this "receding horizon" idea is the defining feature of MPC.
+
+The force-limit constraint is enforced *during* optimization (candidate sequences are projected back into range after every gradient step), not applied afterward — that's what gives MPC a real, demonstrable edge over "compute the unconstrained optimum and clip it" once the limit gets tight.
+
+*(A steep penalty for the cart approaching the track edge was tried too, as a way to give MPC a look-ahead advantage over LQR near a hard position limit — it made the simple gradient-descent optimizer numerically unstable and was dropped. Getting constrained optimization robustly right in general needs a proper QP solver; a plain projected-gradient shooting method is a reasonable, honestly-scoped middle ground for a dependency-free browser demo, but it isn't bulletproof against every kind of constraint.)*
+
 ### Swing-up
 
 The pole's mechanical energy about the pivot, referenced so it's exactly zero at the upright target: `E = ½·I·θ̇² + m·g·l·(cosθ − 1)`, where `I = (4/3)m l²`. The control law `F = −k·θ̇·cosθ·(E_target − E) − Kc·x` pumps energy in on every swing until `E` approaches its target, with a small cart-centering term (`−Kc·x`) so the process doesn't walk the cart off the rail. Once the angle and angular velocity are both small, control switches to LQR.
@@ -140,7 +167,7 @@ This law's sign was **not** obvious from the usual textbook description — an e
 
 ### Code layout
 
-Everything — physics, a hand-rolled small-matrix library, the Riccati solver, energy/swing-up logic, response-time measurement, rendering, and UI — lives in `index.html` with no external dependencies. Top-to-bottom: `Physics → Linear algebra → LQR → Swing-up → Response test → Manual keyboard control → Simulation state → Rendering → Main loop → UI wiring`.
+Everything — physics, a hand-rolled small-matrix library, the Riccati solver, the MPC shooting-method optimizer, energy/swing-up logic, response-time measurement, rendering, and UI — lives in `index.html` with no external dependencies. Top-to-bottom: `Physics → Linear algebra → LQR → MPC → Swing-up → Response test → Manual keyboard control → Simulation state → Rendering → Main loop → UI wiring`.
 
 ## Related projects
 
