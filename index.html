@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cart-Pole Control Lab — PID vs LQR</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0e14;
+    --panel: #131826;
+    --panel-2: #1a2133;
+    --border: #262e42;
+    --text: #e7ebf3;
+    --text-dim: #8b93a7;
+    --accent: #5eb0ff;
+    --accent-2: #ffb454;
+    --good: #4ade80;
+    --bad: #f87171;
+    --mono: 'SF Mono', 'Fira Code', ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    padding: 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 700; }
+  .subtitle { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; }
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.9fr);
+    gap: 16px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+  .panel + .panel { margin-top: 16px; }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin: 0 0 10px;
+    font-weight: 700;
+  }
+  canvas { display: block; width: 100%; border-radius: 8px; background: var(--panel-2); }
+  #simCanvas { height: 320px; }
+  #chartCanvas { height: 160px; margin-top: 10px; }
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 13px;
+  }
+  .status-pill {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .status-ok { background: rgba(74,222,128,0.15); color: var(--good); }
+  .status-bad { background: rgba(248,113,113,0.15); color: var(--bad); }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: #0b0e14; border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.1); color: #0b0e14; }
+  button:active { transform: scale(0.97); }
+  .mode-tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .mode-tabs button { flex: 1; }
+  .mode-tabs button.active { background: var(--accent); color: #0b0e14; border-color: var(--accent); }
+  label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 2px; }
+  .slider-row { margin-bottom: 12px; }
+  .slider-row .val { float: right; font-family: var(--mono); color: var(--text); font-size: 12px; }
+  input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+  }
+  .readouts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .readout {
+    background: var(--panel-2);
+    border-radius: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+  }
+  .readout .k { color: var(--text-dim); display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .readout .v { font-size: 14px; font-weight: 600; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-size: 12px; color: var(--accent); font-weight: 600; user-select: none; }
+  details p, details li { font-size: 12.5px; color: var(--text-dim); line-height: 1.55; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); font-size: 11.5px; color: var(--accent-2); }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body>
+
+<h1>Cart-Pole Control Lab</h1>
+<p class="subtitle">Classical control on the classic benchmark: hand-tuned PID vs. optimal LQR, balancing the same nonlinear cart-pole.</p>
+
+<div class="layout">
+  <div>
+    <div class="panel">
+      <div class="status-row">
+        <span id="statusPill" class="status-pill status-ok">Balanced</span>
+        <span id="timeReadout" style="color:var(--text-dim); font-family:var(--mono);">t = 0.0s</span>
+      </div>
+      <canvas id="simCanvas" width="900" height="320"></canvas>
+      <div class="btn-row" style="margin-top:12px;">
+        <button id="btnStart" class="primary">Start</button>
+        <button id="btnReset">Reset</button>
+        <button id="btnImpulseL">⟵ Push</button>
+        <button id="btnImpulseR">Push ⟶</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Angle &amp; Cart Position over Time</h2>
+      <canvas id="chartCanvas" width="900" height="160"></canvas>
+      <div class="legend">
+        <span><i class="dot" style="background:#5eb0ff"></i> angle θ (deg, scaled to ±60°)</span>
+        <span><i class="dot" style="background:#ffb454"></i> cart x (m, scaled to ±4m)</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Controller</h2>
+      <div class="mode-tabs">
+        <button id="tabOff" data-mode="off">Off</button>
+        <button id="tabPid" data-mode="pid" class="active">PID</button>
+        <button id="tabLqr" data-mode="lqr">LQR</button>
+      </div>
+
+      <div id="pidControls">
+        <div class="slider-row">
+          <label>Angle P gain (Kp) <span class="val" id="kpVal">50.0</span></label>
+          <input type="range" id="kp" min="0" max="150" step="1" value="50" />
+        </div>
+        <div class="slider-row">
+          <label>Angle I gain (Ki) <span class="val" id="kiVal">2.0</span></label>
+          <input type="range" id="ki" min="0" max="15" step="0.5" value="2" />
+        </div>
+        <div class="slider-row">
+          <label>Angle D gain (Kd) <span class="val" id="kdVal">10.0</span></label>
+          <input type="range" id="kd" min="0" max="40" step="0.5" value="10" />
+        </div>
+        <div class="slider-row">
+          <label>Position gain (Kx) <span class="val" id="kxVal">0.30</span></label>
+          <input type="range" id="kx" min="0" max="1.5" step="0.05" value="0.3" />
+        </div>
+        <div class="slider-row">
+          <label>Position damping (Kdx) <span class="val" id="kdxVal">0.70</span></label>
+          <input type="range" id="kdx" min="0" max="3" step="0.05" value="0.7" />
+        </div>
+      </div>
+
+      <div id="lqrControls" style="display:none;">
+        <div class="slider-row">
+          <label>Q: position weight <span class="val" id="q0Val">1.0</span></label>
+          <input type="range" id="q0" min="0" max="20" step="0.5" value="1" />
+        </div>
+        <div class="slider-row">
+          <label>Q: velocity weight <span class="val" id="q1Val">1.0</span></label>
+          <input type="range" id="q1" min="0" max="20" step="0.5" value="1" />
+        </div>
+        <div class="slider-row">
+          <label>Q: angle weight <span class="val" id="q2Val">10.0</span></label>
+          <input type="range" id="q2" min="0" max="50" step="0.5" value="10" />
+        </div>
+        <div class="slider-row">
+          <label>Q: angular velocity weight <span class="val" id="q3Val">1.0</span></label>
+          <input type="range" id="q3" min="0" max="20" step="0.5" value="1" />
+        </div>
+        <div class="slider-row">
+          <label>R: control-effort weight <span class="val" id="rVal">0.50</span></label>
+          <input type="range" id="r" min="0.05" max="5" step="0.05" value="0.5" />
+        </div>
+      </div>
+
+      <h2 style="margin-top:16px;">Physical Parameters</h2>
+      <div class="slider-row">
+        <label>Cart mass M (kg) <span class="val" id="massCVal">1.0</span></label>
+        <input type="range" id="massC" min="0.2" max="3" step="0.1" value="1.0" />
+      </div>
+      <div class="slider-row">
+        <label>Pole mass m (kg) <span class="val" id="massPVal">0.1</span></label>
+        <input type="range" id="massP" min="0.02" max="1" step="0.02" value="0.1" />
+      </div>
+      <div class="slider-row">
+        <label>Pole half-length l (m) <span class="val" id="lenVal">0.50</span></label>
+        <input type="range" id="len" min="0.2" max="1.2" step="0.05" value="0.5" />
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Live Readouts</h2>
+      <div class="readouts">
+        <div class="readout"><span class="k">Angle θ</span><span class="v" id="rTheta">0.0°</span></div>
+        <div class="readout"><span class="k">Cart x</span><span class="v" id="rX">0.00 m</span></div>
+        <div class="readout"><span class="k">Force F</span><span class="v" id="rF">0.0 N</span></div>
+        <div class="readout"><span class="k">Mode</span><span class="v" id="rMode">PID</span></div>
+      </div>
+      <div id="kReadoutWrap" style="display:none; margin-top:10px;">
+        <label>LQR gain K (recomputed live via numeric linearization + discrete Riccati recursion)</label>
+        <div class="readout" style="font-size:11px;" id="rK">—</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <details>
+        <summary>How this works</summary>
+        <p><b>Physics:</b> the cart-pole is the standard nonlinear rigid-rod-on-cart model (frictionless pivot). State is <code>[x, ẋ, θ, θ̇]</code>; the only input is a horizontal force <code>F</code> on the cart. It's integrated with RK4 at a fixed timestep, sub-stepped independently of the animation frame rate.</p>
+        <p><b>PID:</b> drives the pole angle to 0 with <code>F = Kp·θ + Ki·∫θ + Kd·θ̇</code>, plus a slow position-recovery term <code>+ Kx·x + Kdx·ẋ</code> to stop the cart drifting off the track. Angle-only PID balances beautifully but leaves cart position uncontrolled — that coupling is exactly what makes this system harder than two independent single-loop problems, and exactly what LQR handles properly.</p>
+        <p><b>LQR:</b> the nonlinear dynamics are linearized around the upright equilibrium <i>numerically</i> (central finite differences on the true nonlinear model — no hand-derived linear equations), giving matrices A, B. These are discretized at the simulation timestep and fed into the discrete-time algebraic Riccati equation, solved by iterating the backward Riccati recursion to convergence. The result is a single optimal gain vector K such that <code>F = -K·(state − equilibrium)</code> minimizes a cost trading off state error (weighted by Q) against control effort (weighted by R) — one unified law for all four state variables at once, recomputed live whenever Q, R, or the physical parameters change.</p>
+        <p><b>Try this:</b> push the pole hard with PID position-centering gain at 0 — the pole recovers but the cart wanders. Then switch to LQR and push equally hard — position and angle recover together.</p>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- Physics ----------
+  const G = 9.8;
+
+  function derivatives(state, F, p) {
+    const { theta, thetadot } = state;
+    const sinT = Math.sin(theta);
+    const cosT = Math.cos(theta);
+    const totalMass = p.M + p.m;
+    const temp = (F + p.m * p.l * thetadot * thetadot * sinT) / totalMass;
+    const thetaddot = (G * sinT - cosT * temp) / (p.l * (4 / 3 - (p.m * cosT * cosT) / totalMass));
+    const xddot = temp - (p.m * p.l * thetaddot * cosT) / totalMass;
+    return { xdot: state.xdot, xddot, thetadot: state.thetadot, thetaddot };
+  }
+
+  function addState(s, ds, h) {
+    return { x: s.x + h * ds.xdot, xdot: s.xdot + h * ds.xddot, theta: s.theta + h * ds.thetadot, thetadot: s.thetadot + h * ds.thetaddot };
+  }
+
+  function rk4Step(state, F, dt, p) {
+    const k1 = derivatives(state, F, p);
+    const k2 = derivatives(addState(state, k1, dt / 2), F, p);
+    const k3 = derivatives(addState(state, k2, dt / 2), F, p);
+    const k4 = derivatives(addState(state, k3, dt), F, p);
+    return {
+      x: state.x + (dt / 6) * (k1.xdot + 2 * k2.xdot + 2 * k3.xdot + k4.xdot),
+      xdot: state.xdot + (dt / 6) * (k1.xddot + 2 * k2.xddot + 2 * k3.xddot + k4.xddot),
+      theta: state.theta + (dt / 6) * (k1.thetadot + 2 * k2.thetadot + 2 * k3.thetadot + k4.thetadot),
+      thetadot: state.thetadot + (dt / 6) * (k1.thetaddot + 2 * k2.thetaddot + 2 * k3.thetaddot + k4.thetaddot),
+    };
+  }
+
+  // ---------- Small linear algebra (generic, small matrices as arrays-of-arrays) ----------
+  function zeros(r, c) { return Array.from({ length: r }, () => Array(c).fill(0)); }
+  function matMul(A, B) {
+    const rows = A.length, inner = B.length, cols = B[0].length;
+    const R = zeros(rows, cols);
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { let s = 0; for (let k = 0; k < inner; k++) s += A[i][k] * B[k][j]; R[i][j] = s; }
+    return R;
+  }
+  function matAdd(A, B) { return A.map((row, i) => row.map((v, j) => v + B[i][j])); }
+  function matSub(A, B) { return A.map((row, i) => row.map((v, j) => v - B[i][j])); }
+  function transpose(A) { return A[0].map((_, j) => A.map((row) => row[j])); }
+
+  function linearize(p) {
+    const eps = 1e-5;
+    function f(s4, u) {
+      const s = { x: s4[0], xdot: s4[1], theta: s4[2], thetadot: s4[3] };
+      const d = derivatives(s, u, p);
+      return [d.xdot, d.xddot, d.thetadot, d.thetaddot];
+    }
+    const s0 = [0, 0, 0, 0], u0 = 0;
+    const A = zeros(4, 4);
+    for (let j = 0; j < 4; j++) {
+      const sp = s0.slice(); sp[j] += eps;
+      const sm = s0.slice(); sm[j] -= eps;
+      const fp = f(sp, u0), fm = f(sm, u0);
+      for (let i = 0; i < 4; i++) A[i][j] = (fp[i] - fm[i]) / (2 * eps);
+    }
+    const B = zeros(4, 1);
+    const fpU = f(s0, u0 + eps), fmU = f(s0, u0 - eps);
+    for (let i = 0; i < 4; i++) B[i][0] = (fpU[i] - fmU[i]) / (2 * eps);
+    return { A, B };
+  }
+
+  function solveDARE(Ad, Bd, Q, R, iters) {
+    let P = Q.map((r) => r.slice());
+    const AdT = transpose(Ad), BdT = transpose(Bd);
+    for (let k = 0; k < iters; k++) {
+      const BtP = matMul(BdT, P);
+      const BtPB = matMul(BtP, Bd)[0][0];
+      const denom = R + BtPB;
+      const BtPA = matMul(BtP, Ad);
+      const K1x4 = BtPA.map((row) => row.map((v) => v / denom));
+      const AtP = matMul(AdT, P);
+      const AtPA = matMul(AtP, Ad);
+      const AtPB = matMul(AtP, Bd);
+      const term = matMul(AtPB, K1x4);
+      P = matAdd(matSub(AtPA, term), Q);
+    }
+    const BtP = matMul(BdT, P);
+    const BtPB = matMul(BtP, Bd)[0][0];
+    const denom = R + BtPB;
+    const BtPA = matMul(BtP, Ad);
+    return BtPA[0].map((v) => v / denom);
+  }
+
+  function computeLQRGain(p, Qdiag, R, dt) {
+    const { A, B } = linearize(p);
+    const Ad = A.map((row, i) => row.map((v, j) => (i === j ? 1 : 0) + v * dt));
+    const Bd = B.map((row) => row.map((v) => v * dt));
+    const Q = [
+      [Qdiag[0], 0, 0, 0],
+      [0, Qdiag[1], 0, 0],
+      [0, 0, Qdiag[2], 0],
+      [0, 0, 0, Qdiag[3]],
+    ];
+    return solveDARE(Ad, Bd, Q, R, 300);
+  }
+
+  // ---------- Simulation state ----------
+  const DT = 0.01; // physics timestep (s)
+  const TRACK_HALF = 4.0; // meters
+  const FAIL_ANGLE = (55 * Math.PI) / 180;
+
+  let params = { M: 1.0, m: 0.1, l: 0.5 };
+  let state = { x: 0, xdot: 0, theta: 0.03, thetadot: 0 };
+  let integralTheta = 0;
+  let running = false;
+  let failed = false;
+  let simTime = 0;
+  let mode = 'pid';
+  let lastForce = 0;
+  let cachedK = null;
+  let history = []; // {t, theta, x}
+
+  function pidGains() {
+    return {
+      kp: +document.getElementById('kp').value,
+      ki: +document.getElementById('ki').value,
+      kd: +document.getElementById('kd').value,
+      kx: +document.getElementById('kx').value,
+      kdx: +document.getElementById('kdx').value,
+    };
+  }
+  function lqrWeights() {
+    return {
+      Qdiag: [+document.getElementById('q0').value, +document.getElementById('q1').value, +document.getElementById('q2').value, +document.getElementById('q3').value],
+      R: +document.getElementById('r').value,
+    };
+  }
+
+  function recomputeK() {
+    const { Qdiag, R } = lqrWeights();
+    cachedK = computeLQRGain(params, Qdiag, R, DT);
+    document.getElementById('rK').textContent = cachedK.map((v) => v.toFixed(2)).join(',  ');
+  }
+
+  function controlForce() {
+    if (mode === 'off') return 0;
+    if (mode === 'pid') {
+      const g = pidGains();
+      integralTheta += state.theta * DT;
+      integralTheta = Math.max(-3, Math.min(3, integralTheta)); // anti-windup clamp
+      return g.kp * state.theta + g.ki * integralTheta + g.kd * state.thetadot + g.kx * state.x + g.kdx * state.xdot;
+    }
+    if (mode === 'lqr') {
+      if (!cachedK) recomputeK();
+      const K = cachedK;
+      return -(K[0] * state.x + K[1] * state.xdot + K[2] * state.theta + K[3] * state.thetadot);
+    }
+    return 0;
+  }
+
+  function stepSim() {
+    if (!running || failed) return;
+    const F = controlForce();
+    lastForce = F;
+    state = rk4Step(state, F, DT, params);
+    simTime += DT;
+    if (state.x > TRACK_HALF) { state.x = TRACK_HALF; failed = true; }
+    if (state.x < -TRACK_HALF) { state.x = -TRACK_HALF; failed = true; }
+    if (Math.abs(state.theta) > FAIL_ANGLE) failed = true;
+    history.push({ t: simTime, theta: state.theta, x: state.x });
+    if (history.length > 1200) history.shift();
+  }
+
+  // ---------- Rendering ----------
+  const simCanvas = document.getElementById('simCanvas');
+  const sctx = simCanvas.getContext('2d');
+  const chartCanvas = document.getElementById('chartCanvas');
+  const cctx = chartCanvas.getContext('2d');
+
+  function fitCanvas(canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    return dpr;
+  }
+
+  function drawSim() {
+    const dpr = fitCanvas(simCanvas);
+    const w = simCanvas.width, h = simCanvas.height;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, w, h);
+    sctx.fillStyle = '#1a2133';
+    sctx.fillRect(0, 0, w, h);
+
+    const groundY = h * 0.68;
+    const pxPerM = (w * 0.42) / TRACK_HALF; // scale so track half-width fits comfortably
+
+    // track
+    sctx.strokeStyle = '#3a4362';
+    sctx.lineWidth = 3 * dpr;
+    sctx.beginPath();
+    sctx.moveTo(w / 2 - TRACK_HALF * pxPerM - 20 * dpr, groundY);
+    sctx.lineTo(w / 2 + TRACK_HALF * pxPerM + 20 * dpr, groundY);
+    sctx.stroke();
+    // track bound markers
+    sctx.strokeStyle = '#f87171';
+    sctx.lineWidth = 2 * dpr;
+    [(-TRACK_HALF), TRACK_HALF].forEach((b) => {
+      const bx = w / 2 + b * pxPerM;
+      sctx.beginPath();
+      sctx.moveTo(bx, groundY - 14 * dpr);
+      sctx.lineTo(bx, groundY + 14 * dpr);
+      sctx.stroke();
+    });
+
+    const cartX = w / 2 + state.x * pxPerM;
+    const cartW = 64 * dpr, cartH = 34 * dpr;
+
+    // pole
+    const poleLen = params.l * 2 * pxPerM; // full pole length in px
+    const pivotX = cartX, pivotY = groundY - cartH / 2;
+    const tipX = pivotX + poleLen * Math.sin(state.theta);
+    const tipY = pivotY - poleLen * Math.cos(state.theta);
+    sctx.strokeStyle = failed ? '#f87171' : '#ffb454';
+    sctx.lineWidth = 6 * dpr;
+    sctx.lineCap = 'round';
+    sctx.beginPath();
+    sctx.moveTo(pivotX, pivotY);
+    sctx.lineTo(tipX, tipY);
+    sctx.stroke();
+    sctx.fillStyle = failed ? '#f87171' : '#ffb454';
+    sctx.beginPath();
+    sctx.arc(tipX, tipY, 8 * dpr, 0, Math.PI * 2);
+    sctx.fill();
+
+    // cart
+    sctx.fillStyle = '#5eb0ff';
+    sctx.beginPath();
+    sctx.roundRect ? sctx.roundRect(cartX - cartW / 2, groundY - cartH / 2, cartW, cartH, 6 * dpr) : sctx.rect(cartX - cartW / 2, groundY - cartH / 2, cartW, cartH);
+    sctx.fill();
+    // wheels
+    sctx.fillStyle = '#0b0e14';
+    [cartX - cartW / 3, cartX + cartW / 3].forEach((wx) => {
+      sctx.beginPath();
+      sctx.arc(wx, groundY + cartH / 2, 6 * dpr, 0, Math.PI * 2);
+      sctx.fill();
+    });
+    // pivot dot
+    sctx.fillStyle = '#0b0e14';
+    sctx.beginPath();
+    sctx.arc(pivotX, pivotY, 4 * dpr, 0, Math.PI * 2);
+    sctx.fill();
+
+    // force arrow
+    if (Math.abs(lastForce) > 0.05) {
+      const dir = Math.sign(lastForce);
+      const len = Math.min(60, Math.abs(lastForce) * 3) * dpr;
+      const ay = groundY;
+      sctx.strokeStyle = '#4ade80';
+      sctx.lineWidth = 3 * dpr;
+      sctx.beginPath();
+      sctx.moveTo(cartX, ay + cartH);
+      sctx.lineTo(cartX + dir * len, ay + cartH);
+      sctx.stroke();
+      sctx.beginPath();
+      sctx.moveTo(cartX + dir * len, ay + cartH);
+      sctx.lineTo(cartX + dir * len - dir * 8 * dpr, ay + cartH - 5 * dpr);
+      sctx.lineTo(cartX + dir * len - dir * 8 * dpr, ay + cartH + 5 * dpr);
+      sctx.closePath();
+      sctx.fillStyle = '#4ade80';
+      sctx.fill();
+    }
+  }
+
+  function drawChart() {
+    const dpr = fitCanvas(chartCanvas);
+    const w = chartCanvas.width, h = chartCanvas.height;
+    cctx.setTransform(1, 0, 0, 1, 0, 0);
+    cctx.clearRect(0, 0, w, h);
+    cctx.fillStyle = '#1a2133';
+    cctx.fillRect(0, 0, w, h);
+    cctx.strokeStyle = '#3a4362';
+    cctx.lineWidth = 1;
+    cctx.beginPath();
+    cctx.moveTo(0, h / 2);
+    cctx.lineTo(w, h / 2);
+    cctx.stroke();
+
+    if (history.length < 2) return;
+    const n = history.length;
+    const tMax = history[n - 1].t;
+    const tMin = Math.max(0, tMax - 12); // rolling 12s window
+    const visible = history.filter((pt) => pt.t >= tMin);
+    if (visible.length < 2) return;
+
+    function plot(getVal, scale, color) {
+      cctx.strokeStyle = color;
+      cctx.lineWidth = 2 * dpr;
+      cctx.beginPath();
+      visible.forEach((pt, i) => {
+        const px = ((pt.t - tMin) / (tMax - tMin || 1)) * w;
+        const py = h / 2 - (getVal(pt) / scale) * (h / 2);
+        if (i === 0) cctx.moveTo(px, py); else cctx.lineTo(px, py);
+      });
+      cctx.stroke();
+    }
+    plot((p) => (p.theta * 180) / Math.PI, 60, '#5eb0ff');
+    plot((p) => p.x, TRACK_HALF, '#ffb454');
+  }
+
+  function updateReadouts() {
+    document.getElementById('timeReadout').textContent = 't = ' + simTime.toFixed(1) + 's';
+    document.getElementById('rTheta').textContent = ((state.theta * 180) / Math.PI).toFixed(1) + '°';
+    document.getElementById('rX').textContent = state.x.toFixed(2) + ' m';
+    document.getElementById('rF').textContent = lastForce.toFixed(1) + ' N';
+    document.getElementById('rMode').textContent = mode.toUpperCase();
+    const pill = document.getElementById('statusPill');
+    if (failed) {
+      pill.textContent = state.x >= TRACK_HALF || state.x <= -TRACK_HALF ? 'Cart left track' : 'Pole fell';
+      pill.className = 'status-pill status-bad';
+    } else {
+      pill.textContent = running ? 'Balanced' : 'Paused';
+      pill.className = 'status-pill status-ok';
+    }
+  }
+
+  // ---------- Main loop (fixed-dt physics substeps, decoupled from frame rate) ----------
+  let lastFrameTime = performance.now();
+  let accumulator = 0;
+  function frame(now) {
+    const elapsed = Math.min(0.05, (now - lastFrameTime) / 1000);
+    lastFrameTime = now;
+    accumulator += elapsed;
+    let steps = 0;
+    while (accumulator >= DT && steps < 10) {
+      stepSim();
+      accumulator -= DT;
+      steps++;
+    }
+    drawSim();
+    drawChart();
+    updateReadouts();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- UI wiring ----------
+  function bindSlider(id, valId, fmt) {
+    const el = document.getElementById(id);
+    const valEl = document.getElementById(valId);
+    el.addEventListener('input', () => {
+      valEl.textContent = fmt(+el.value);
+      if (['massC', 'massP', 'len', 'q0', 'q1', 'q2', 'q3', 'r'].includes(id)) {
+        params.M = +document.getElementById('massC').value;
+        params.m = +document.getElementById('massP').value;
+        params.l = +document.getElementById('len').value;
+        cachedK = null;
+        recomputeK();
+      }
+    });
+  }
+  bindSlider('kp', 'kpVal', (v) => v.toFixed(1));
+  bindSlider('ki', 'kiVal', (v) => v.toFixed(1));
+  bindSlider('kd', 'kdVal', (v) => v.toFixed(1));
+  bindSlider('kx', 'kxVal', (v) => v.toFixed(2));
+  bindSlider('kdx', 'kdxVal', (v) => v.toFixed(2));
+  bindSlider('q0', 'q0Val', (v) => v.toFixed(1));
+  bindSlider('q1', 'q1Val', (v) => v.toFixed(1));
+  bindSlider('q2', 'q2Val', (v) => v.toFixed(1));
+  bindSlider('q3', 'q3Val', (v) => v.toFixed(1));
+  bindSlider('r', 'rVal', (v) => v.toFixed(2));
+  bindSlider('massC', 'massCVal', (v) => v.toFixed(1));
+  bindSlider('massP', 'massPVal', (v) => v.toFixed(2));
+  bindSlider('len', 'lenVal', (v) => v.toFixed(2));
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('tabOff').classList.toggle('active', m === 'off');
+    document.getElementById('tabPid').classList.toggle('active', m === 'pid');
+    document.getElementById('tabLqr').classList.toggle('active', m === 'lqr');
+    document.getElementById('pidControls').style.display = m === 'pid' ? 'block' : 'none';
+    document.getElementById('lqrControls').style.display = m === 'lqr' ? 'block' : 'none';
+    document.getElementById('kReadoutWrap').style.display = m === 'lqr' ? 'block' : 'none';
+    if (m === 'lqr') recomputeK();
+  }
+  document.getElementById('tabOff').addEventListener('click', () => setMode('off'));
+  document.getElementById('tabPid').addEventListener('click', () => setMode('pid'));
+  document.getElementById('tabLqr').addEventListener('click', () => setMode('lqr'));
+
+  function reset() {
+    params.M = +document.getElementById('massC').value;
+    params.m = +document.getElementById('massP').value;
+    params.l = +document.getElementById('len').value;
+    state = { x: 0, xdot: 0, theta: 0.03, thetadot: 0 };
+    integralTheta = 0;
+    simTime = 0;
+    failed = false;
+    history = [];
+    cachedK = null;
+    if (mode === 'lqr') recomputeK();
+  }
+
+  document.getElementById('btnStart').addEventListener('click', (e) => {
+    running = !running;
+    e.target.textContent = running ? 'Pause' : 'Start';
+  });
+  document.getElementById('btnReset').addEventListener('click', () => {
+    reset();
+    document.getElementById('btnStart').textContent = 'Start';
+    running = false;
+  });
+  document.getElementById('btnImpulseL').addEventListener('click', () => { if (!failed) state.thetadot -= 1.2; });
+  document.getElementById('btnImpulseR').addEventListener('click', () => { if (!failed) state.thetadot += 1.2; });
+
+  reset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
