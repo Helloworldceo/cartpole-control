@@ -43,13 +43,35 @@ Push the pole exactly as hard as before. This time both the angle **and** the ca
 
 ![LQR recovering from a push, position and angle together](screenshots/3-lqr-recovering.png)
 
-### 3. Experiment with the physics itself
+### 3. Swing it up from hanging down
 
-The **Physical Parameters** sliders change the actual simulated system — cart mass, pole mass, pole length. Try making the pole much longer or the pole much heavier relative to the cart, then compare how much harder PID has to work versus how LQR just re-solves itself automatically.
+Click the **Swing-Up** tab. This is a third, completely different control philosophy: instead of a linear correction near the upright equilibrium, it's **nonlinear energy-shaping control**, and it starts from the pole hanging straight down.
 
-### 4. Read the chart
+![Hanging straight down, about to start swinging up](screenshots/4-swingup-hanging.png)
 
-The strip chart below the simulation plots angle (blue) and cart position (orange) over a rolling 12-second window — useful for eyeballing overshoot, settling time, and oscillation as you retune gains.
+Click **Start**. The controller pumps energy into the pendulum's swing on every cycle — you'll see it rock back and forth with growing amplitude — until the angle and angular velocity are both small enough, at which point it automatically hands off to LQR to catch and hold it upright.
+
+![Mid-swing, pumping energy into the pendulum](screenshots/5-swingup-mid.png)
+
+![Handed off to LQR and balanced upright](screenshots/6-swingup-balanced.png)
+
+The **Swing gain** and **Cart centering gain** sliders control how aggressively it pumps energy and how hard it fights to keep the cart from wandering off the rail while doing so — turn the centering gain to 0 and watch the cart run away before ever reaching the top.
+
+### 4. Try balancing it yourself
+
+Click the **Manual** tab (previously "Off") and click **Start** — no controller is active. Click the page once so it has keyboard focus, then use **← / →** to push the cart yourself. Almost everyone loses it within a couple of seconds; it's a good visceral sense of why automatic control is worth having.
+
+### 5. Measure the response quantitatively
+
+With **PID** or **LQR** active and running, click **Test Step Response**. It applies a fixed angular disturbance and reports the **settling time** (how long until the angle stays within 2° continuously) and **peak overshoot** — the standard metrics control engineers use to compare tuning choices. Try it on PID and LQR back to back with their default gains: LQR isn't automatically "better" on every axis — it's optimal with respect to the cost you hand it (the Q/R weights), and the defaults here trade a slower, gentler response for lower control effort.
+
+### 6. Experiment with the physics itself
+
+The **Physical Parameters** sliders change the actual simulated system — cart mass, pole mass, pole length. Try making the pole much longer or the pole much heavier relative to the cart, then compare how much harder PID has to work versus how LQR (and swing-up) just re-solve themselves automatically.
+
+### 7. Read the chart
+
+The strip chart below the simulation plots angle (blue) and cart position (orange) over a rolling 12-second window — useful for eyeballing overshoot, settling time, and oscillation as you retune gains. (During swing-up, angle briefly exceeds the chart's ±60° scale and draws off the top — that's expected; the chart is most informative once you're in the balancing phase.)
 
 ## How the physics works
 

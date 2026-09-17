@@ -141,6 +141,10 @@
         <button id="btnImpulseL">⟵ Push</button>
         <button id="btnImpulseR">Push ⟶</button>
       </div>
+      <div class="btn-row">
+        <button id="btnTest">Test Step Response</button>
+        <span id="testResult" style="font-family:var(--mono); font-size:12px; color:var(--text-dim); align-self:center;"></span>
+      </div>
     </div>
 
     <div class="panel">
@@ -157,9 +161,28 @@
     <div class="panel">
       <h2>Controller</h2>
       <div class="mode-tabs">
-        <button id="tabOff" data-mode="off">Off</button>
+        <button id="tabOff" data-mode="off">Manual</button>
         <button id="tabPid" data-mode="pid" class="active">PID</button>
         <button id="tabLqr" data-mode="lqr">LQR</button>
+        <button id="tabSwing" data-mode="swingup">Swing-Up</button>
+      </div>
+
+      <p id="manualHint" style="display:none; font-size:11.5px; color:var(--text-dim); margin:-4px 0 12px;">No controller active — use <code>&larr;</code> / <code>&rarr;</code> arrow keys (click the page first) to try balancing it by hand.</p>
+
+      <div id="swingControls" style="display:none;">
+        <div class="slider-row">
+          <label>Swing gain k <span class="val" id="kSwingVal">3.5</span></label>
+          <input type="range" id="kSwing" min="0.5" max="10" step="0.1" value="3.5" />
+        </div>
+        <div class="slider-row">
+          <label>Cart centering gain <span class="val" id="kCenterSwingVal">1.2</span></label>
+          <input type="range" id="kCenterSwing" min="0" max="4" step="0.1" value="1.2" />
+        </div>
+        <div class="slider-row">
+          <label>Max swing force (N) <span class="val" id="maxSwingFVal">20</span></label>
+          <input type="range" id="maxSwingF" min="10" max="30" step="1" value="20" />
+        </div>
+        <p style="font-size:11px; color:var(--text-dim); margin-top:-4px;">Starts hanging straight down. Pumps energy into the swing until it's near the top, then automatically hands off to LQR to catch and balance it.</p>
       </div>
 
       <div id="pidControls">
@@ -231,6 +254,9 @@
         <div class="readout"><span class="k">Force F</span><span class="v" id="rF">0.0 N</span></div>
         <div class="readout"><span class="k">Mode</span><span class="v" id="rMode">PID</span></div>
       </div>
+      <div id="swingReadoutWrap" style="display:none; margin-top:8px;">
+        <div class="readout"><span class="k">Phase</span><span class="v" id="rPhase">—</span></div>
+      </div>
       <div id="kReadoutWrap" style="display:none; margin-top:10px;">
         <label>LQR gain K (recomputed live via numeric linearization + discrete Riccati recursion)</label>
         <div class="readout" style="font-size:11px;" id="rK">—</div>
@@ -243,7 +269,9 @@
         <p><b>Physics:</b> the cart-pole is the standard nonlinear rigid-rod-on-cart model (frictionless pivot). State is <code>[x, ẋ, θ, θ̇]</code>; the only input is a horizontal force <code>F</code> on the cart. It's integrated with RK4 at a fixed timestep, sub-stepped independently of the animation frame rate.</p>
         <p><b>PID:</b> drives the pole angle to 0 with <code>F = Kp·θ + Ki·∫θ + Kd·θ̇</code>, plus a slow position-recovery term <code>+ Kx·x + Kdx·ẋ</code> to stop the cart drifting off the track. Angle-only PID balances beautifully but leaves cart position uncontrolled — that coupling is exactly what makes this system harder than two independent single-loop problems, and exactly what LQR handles properly.</p>
         <p><b>LQR:</b> the nonlinear dynamics are linearized around the upright equilibrium <i>numerically</i> (central finite differences on the true nonlinear model — no hand-derived linear equations), giving matrices A, B. These are discretized at the simulation timestep and fed into the discrete-time algebraic Riccati equation, solved by iterating the backward Riccati recursion to convergence. The result is a single optimal gain vector K such that <code>F = -K·(state − equilibrium)</code> minimizes a cost trading off state error (weighted by Q) against control effort (weighted by R) — one unified law for all four state variables at once, recomputed live whenever Q, R, or the physical parameters change.</p>
-        <p><b>Try this:</b> push the pole hard with PID position-centering gain at 0 — the pole recovers but the cart wanders. Then switch to LQR and push equally hard — position and angle recover together.</p>
+        <p><b>Swing-Up:</b> a third, completely different design philosophy — nonlinear energy-shaping control. Instead of a linear correction near one equilibrium, it works far from equilibrium: starting from hanging straight down, it computes the pole's mechanical energy <code>E = ½Iθ̇² + mgl(cosθ−1)</code> (zero exactly at the upright target) and applies <code>F = −k·θ̇·cosθ·(E_target − E) − Kc·x</code> — a term that pumps energy into the swing every cycle until it's near the top, plus a small cart-centering term so the cart doesn't run off the rail while swinging. Once the angle and angular velocity are both small enough, it automatically hands off to LQR to catch and hold it. (Getting the energy-pumping sign and the centering term right took genuine trial and error against a numerical simulation, not just the textbook formula — a good reminder that even "solved" control problems need verification, not just derivation.)</p>
+        <p><b>Manual:</b> the "Off" tab is also a playable mode — click the page and use the arrow keys to push the cart yourself. It's a good way to feel how fast and precise a real controller has to be; most people can't hold it up for more than a couple of seconds.</p>
+        <p><b>Try this:</b> push the pole hard with PID position-centering gain at 0 — the pole recovers but the cart wanders. Then switch to LQR and push equally hard — position and angle recover together. Or run <b>Test Step Response</b> under PID vs. LQR with equivalent gains and compare settling time and overshoot directly.</p>
       </details>
     </div>
   </div>
@@ -367,6 +395,85 @@
   let lastForce = 0;
   let cachedK = null;
   let history = []; // {t, theta, x}
+  let swungUp = false; // swing-up phase complete, handed off to LQR catch
+
+  // Energy of the pole about the pivot (zero exactly at the upright equilibrium)
+  function poleEnergy(s, p) {
+    const I = (4 / 3) * p.m * p.l * p.l;
+    return 0.5 * I * s.thetadot * s.thetadot + p.m * G * p.l * (Math.cos(s.theta) - 1);
+  }
+  function swingUpGains() {
+    return {
+      k: +document.getElementById('kSwing').value,
+      kc: +document.getElementById('kCenterSwing').value,
+      maxF: +document.getElementById('maxSwingF').value,
+    };
+  }
+  function swingUpForce() {
+    const g = swingUpGains();
+    const E = poleEnergy(state, params);
+    let F = -g.k * state.thetadot * Math.cos(state.theta) * (0 - E) - g.kc * state.x;
+    return Math.max(-g.maxF, Math.min(g.maxF, F));
+  }
+
+  // ---------- Response-step test (settling time / overshoot) ----------
+  const SETTLE_TOL = (2 * Math.PI) / 180; // 2 degrees
+  const SETTLE_DURATION = 0.5; // seconds continuously within tolerance
+  const TEST_TIMEOUT = 15;
+  let testActive = false;
+  let testStartTime = 0;
+  let testPeak = 0;
+  let testStreakStart = null;
+
+  function startResponseTest() {
+    if (mode === 'off' || failed) return;
+    if (!running) { running = true; document.getElementById('btnStart').textContent = 'Pause'; }
+    state.thetadot += 1.5;
+    testActive = true;
+    testStartTime = simTime;
+    testPeak = Math.abs(state.theta);
+    testStreakStart = null;
+    document.getElementById('testResult').textContent = 'Running…';
+  }
+  function finishTest(settleTime, failedRun) {
+    testActive = false;
+    const overshootDeg = ((testPeak * 180) / Math.PI).toFixed(1);
+    const el = document.getElementById('testResult');
+    if (failedRun) {
+      el.textContent = `Pole fell before settling (peak ${overshootDeg}°) — try weaker gains next time`;
+    } else {
+      el.textContent = settleTime === null
+        ? `Did not settle within ${TEST_TIMEOUT}s (peak ${overshootDeg}°)`
+        : `Settled in ${settleTime.toFixed(2)}s · peak ${overshootDeg}°`;
+    }
+  }
+  function updateResponseTest() {
+    if (!testActive) return;
+    if (failed) { finishTest(null, true); return; }
+    const absTheta = Math.abs(state.theta);
+    testPeak = Math.max(testPeak, absTheta);
+    if (absTheta < SETTLE_TOL) {
+      if (testStreakStart === null) testStreakStart = simTime;
+      if (simTime - testStreakStart >= SETTLE_DURATION) finishTest(testStreakStart - testStartTime);
+    } else {
+      testStreakStart = null;
+    }
+    if (testActive && simTime - testStartTime > TEST_TIMEOUT) finishTest(null);
+  }
+
+  // ---------- Manual keyboard control (Off/Manual mode) ----------
+  const MANUAL_FORCE = 15;
+  let manualForce = 0;
+  window.addEventListener('keydown', (e) => {
+    if (mode !== 'off') return;
+    if (e.key === 'ArrowLeft') manualForce = -MANUAL_FORCE;
+    else if (e.key === 'ArrowRight') manualForce = MANUAL_FORCE;
+    else return;
+    e.preventDefault();
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') manualForce = 0;
+  });
 
   function pidGains() {
     return {
@@ -391,7 +498,7 @@
   }
 
   function controlForce() {
-    if (mode === 'off') return 0;
+    if (mode === 'off') return manualForce;
     if (mode === 'pid') {
       const g = pidGains();
       integralTheta += state.theta * DT;
@@ -399,6 +506,22 @@
       return g.kp * state.theta + g.ki * integralTheta + g.kd * state.thetadot + g.kx * state.x + g.kdx * state.xdot;
     }
     if (mode === 'lqr') {
+      if (!cachedK) recomputeK();
+      const K = cachedK;
+      return -(K[0] * state.x + K[1] * state.xdot + K[2] * state.theta + K[3] * state.thetadot);
+    }
+    if (mode === 'swingup') {
+      if (!swungUp) {
+        let a = state.theta % (2 * Math.PI);
+        if (a > Math.PI) a -= 2 * Math.PI;
+        if (a < -Math.PI) a += 2 * Math.PI;
+        if (Math.abs(a) < 0.35 && Math.abs(state.thetadot) < 2.5) {
+          swungUp = true;
+          state.theta = a; // normalize so the stabilizer sees a small angle, not e.g. 2π+0.1
+        } else {
+          return swingUpForce();
+        }
+      }
       if (!cachedK) recomputeK();
       const K = cachedK;
       return -(K[0] * state.x + K[1] * state.xdot + K[2] * state.theta + K[3] * state.thetadot);
@@ -414,9 +537,10 @@
     simTime += DT;
     if (state.x > TRACK_HALF) { state.x = TRACK_HALF; failed = true; }
     if (state.x < -TRACK_HALF) { state.x = -TRACK_HALF; failed = true; }
-    if (Math.abs(state.theta) > FAIL_ANGLE) failed = true;
+    if ((mode !== 'swingup' || swungUp) && Math.abs(state.theta) > FAIL_ANGLE) failed = true;
     history.push({ t: simTime, theta: state.theta, x: state.x });
     if (history.length > 1200) history.shift();
+    updateResponseTest();
   }
 
   // ---------- Rendering ----------
@@ -562,11 +686,18 @@
     document.getElementById('rTheta').textContent = ((state.theta * 180) / Math.PI).toFixed(1) + '°';
     document.getElementById('rX').textContent = state.x.toFixed(2) + ' m';
     document.getElementById('rF').textContent = lastForce.toFixed(1) + ' N';
-    document.getElementById('rMode').textContent = mode.toUpperCase();
+    const modeLabels = { off: 'MANUAL', pid: 'PID', lqr: 'LQR', swingup: 'SWING-UP' };
+    document.getElementById('rMode').textContent = modeLabels[mode] || mode.toUpperCase();
+    if (mode === 'swingup') {
+      document.getElementById('rPhase').textContent = swungUp ? 'Balancing' : 'Swinging up…';
+    }
     const pill = document.getElementById('statusPill');
     if (failed) {
       pill.textContent = state.x >= TRACK_HALF || state.x <= -TRACK_HALF ? 'Cart left track' : 'Pole fell';
       pill.className = 'status-pill status-bad';
+    } else if (mode === 'swingup' && !swungUp && running) {
+      pill.textContent = 'Swinging up…';
+      pill.className = 'status-pill status-ok';
     } else {
       pill.textContent = running ? 'Balanced' : 'Paused';
       pill.className = 'status-pill status-ok';
@@ -622,30 +753,41 @@
   bindSlider('len', 'lenVal', (v) => v.toFixed(2));
 
   function setMode(m) {
+    const needsReset = m === 'swingup' || mode === 'swingup';
     mode = m;
     document.getElementById('tabOff').classList.toggle('active', m === 'off');
     document.getElementById('tabPid').classList.toggle('active', m === 'pid');
     document.getElementById('tabLqr').classList.toggle('active', m === 'lqr');
+    document.getElementById('tabSwing').classList.toggle('active', m === 'swingup');
     document.getElementById('pidControls').style.display = m === 'pid' ? 'block' : 'none';
     document.getElementById('lqrControls').style.display = m === 'lqr' ? 'block' : 'none';
-    document.getElementById('kReadoutWrap').style.display = m === 'lqr' ? 'block' : 'none';
-    if (m === 'lqr') recomputeK();
+    document.getElementById('swingControls').style.display = m === 'swingup' ? 'block' : 'none';
+    document.getElementById('manualHint').style.display = m === 'off' ? 'block' : 'none';
+    document.getElementById('kReadoutWrap').style.display = m === 'lqr' || m === 'swingup' ? 'block' : 'none';
+    document.getElementById('swingReadoutWrap').style.display = m === 'swingup' ? 'block' : 'none';
+    if (m === 'lqr' || m === 'swingup') recomputeK();
+    if (needsReset) reset();
   }
   document.getElementById('tabOff').addEventListener('click', () => setMode('off'));
   document.getElementById('tabPid').addEventListener('click', () => setMode('pid'));
   document.getElementById('tabLqr').addEventListener('click', () => setMode('lqr'));
+  document.getElementById('tabSwing').addEventListener('click', () => setMode('swingup'));
 
   function reset() {
     params.M = +document.getElementById('massC').value;
     params.m = +document.getElementById('massP').value;
     params.l = +document.getElementById('len').value;
-    state = { x: 0, xdot: 0, theta: 0.03, thetadot: 0 };
+    state = mode === 'swingup' ? { x: 0, xdot: 0, theta: Math.PI, thetadot: 0.05 } : { x: 0, xdot: 0, theta: 0.03, thetadot: 0 };
     integralTheta = 0;
     simTime = 0;
     failed = false;
+    swungUp = false;
+    manualForce = 0;
     history = [];
+    testActive = false;
+    document.getElementById('testResult').textContent = '';
     cachedK = null;
-    if (mode === 'lqr') recomputeK();
+    if (mode === 'lqr' || mode === 'swingup') recomputeK();
   }
 
   document.getElementById('btnStart').addEventListener('click', (e) => {
@@ -659,6 +801,10 @@
   });
   document.getElementById('btnImpulseL').addEventListener('click', () => { if (!failed) state.thetadot -= 1.2; });
   document.getElementById('btnImpulseR').addEventListener('click', () => { if (!failed) state.thetadot += 1.2; });
+  document.getElementById('btnTest').addEventListener('click', startResponseTest);
+  bindSlider('kSwing', 'kSwingVal', (v) => v.toFixed(1));
+  bindSlider('kCenterSwing', 'kCenterSwingVal', (v) => v.toFixed(1));
+  bindSlider('maxSwingF', 'maxSwingFVal', (v) => String(v));
 
   reset();
   requestAnimationFrame(frame);
